@@ -149,6 +149,9 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_sleep\
+	$U/_pingpong\
+	$U/_primes\
 
 
 ifeq ($(LAB),syscall)
@@ -176,6 +179,9 @@ endif
 UEXTRA=
 ifeq ($(LAB),util)
 	UEXTRA += user/xargstest.sh
+	UEXTRA += user/sleep.c
+	UEXTRA += user/pingpong.c
+	UEXTRA += user/primes.c
 endif
 
 fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)
