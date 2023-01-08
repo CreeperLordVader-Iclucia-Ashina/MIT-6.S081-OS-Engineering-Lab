@@ -152,6 +152,8 @@ UPROGS=\
 	$U/_sleep\
 	$U/_pingpong\
 	$U/_primes\
+	$U/_find\
+	$U/_xargs\
 
 
 ifeq ($(LAB),syscall)
@@ -182,6 +184,8 @@ ifeq ($(LAB),util)
 	UEXTRA += user/sleep.c
 	UEXTRA += user/pingpong.c
 	UEXTRA += user/primes.c
+	UEXTRA += user/find.c
+	UEXTRA += user/xargs.c
 endif
 
 fs.img: mkfs/mkfs README $(UEXTRA) $(UPROGS)

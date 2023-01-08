@@ -3,6 +3,7 @@
         "user.h": "c",
         "types.h": "c",
         "fs.h": "c",
-        "stat.h": "c"
+        "stat.h": "c",
+        "param.h": "c"
     }
 }
