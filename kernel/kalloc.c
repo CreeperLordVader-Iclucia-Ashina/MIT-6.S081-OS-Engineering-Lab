@@ -47,9 +47,12 @@ void
 kfree(void *pa)
 {
   struct run *r;
-
-  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
-    panic("kfree");
+  if((char*)pa < end)
+    panic("kfree: physical address too low");
+  else if((uint64)pa >= PHYSTOP)
+    panic("kfree: physical address too high");
+  else if((uint64)pa % PGSIZE != 0)
+    panic("kfree: physical address not aligned");
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);

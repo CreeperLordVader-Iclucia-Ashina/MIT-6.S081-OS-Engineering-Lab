@@ -8,6 +8,8 @@
 #include "defs.h"
 
 // Fetch the uint64 at addr from the current process.
+// the value of addr is in user's address space, but we are using kernel pagetable now
+// so we cannot dereference it directly
 int
 fetchaddr(uint64 addr, uint64 *ip)
 {

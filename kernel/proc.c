@@ -15,7 +15,11 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+extern void kvmmap_proc(pagetable_t kvm_pt, uint64 va, uint64 pa, uint64 sz, int perm);
+extern pagetable_t kvminitproc(pagetable_t pt);
+extern void proc_kvmfree(pagetable_t pagetable);
 extern void forkret(void);
+extern pte_t* walk(pagetable_t pagetable, uint64 va, int alloc);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
@@ -30,16 +34,6 @@ procinit(void)
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
-
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
   }
   kvminithart();
 }
@@ -115,7 +109,18 @@ found:
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
-  if(p->pagetable == 0){
+  // Allocate a page for the process's kernel stack.
+  // Map it high in memory, followed by an invalid
+  // guard page.
+  p->kvm = kvminitproc(p->pagetable);
+  uint64 va = KSTACK((int)(p - proc));
+  // now we map the kernel stack
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  kvmmap_proc(p->kvm, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+  if(p->pagetable == 0 || p->kvm == 0){
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -141,6 +146,12 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kvm) 
+  {
+    uvmunmap(p->kvm, p->kstack, 1, 1);
+    proc_kvmfree(p->kvm);
+  }
+  p->kvm = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -473,10 +484,16 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
+        if(p->kvm)
+        {
+          w_satp(MAKE_SATP(p->kvm));
+          sfence_vma();
+          swtch(&c->context, &p->context);
+          // Process is done running for now.
+          // It should have changed its p->state before coming back.
+          kvminithart();
+        }
+        else panic("scheduler");
         c->proc = 0;
 
         found = 1;

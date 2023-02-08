@@ -14,7 +14,7 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
-
+extern void printf(char *fmt, ...);
 /*
  * create a direct-map page table for the kernel.
  */
@@ -45,6 +45,17 @@ kvminit()
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+}
+
+// create a kernel page table for current proccess
+// only the first virtual page(virtual page 0) is mapped to the physical page the process is using
+// all the other virtual pages are indentical to the kernel_pagetable
+pagetable_t kvminitproc(pagetable_t uvm)
+{
+  pagetable_t pt = kalloc();
+  for(int i = 0; i < 512; i++)
+    pt[i] = kernel_pagetable[i];
+  return pt;
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -111,6 +122,13 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
+void kvmmap_proc(pagetable_t kvm_pt, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(kvm_pt, va, sz, pa, perm) != 0)
+    panic("kvmmap_proc");
+
+}
+
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -167,9 +185,18 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   return 0;
 }
 
+// this can only be called when we are using kernel_pagetable
+// clear the per-process kernel pagetable
+// the 1~511 level-0 virtual page points to the level-1 kernel page table, cannot be freed
+// the 0 level-0 virtual page points to the level-1 user page table, cannot be freed
+void proc_kvmfree(pagetable_t pagetable)
+{
+  kfree((void *)pagetable);
+}
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
 // Optionally free the physical memory.
+
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
@@ -438,5 +465,30 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+void vmprint(pagetable_t pagetable)
+{
+  static int dep = 0;
+  if(!dep) printf("page table %p\n", pagetable);
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && ((pte & (PTE_R|PTE_W|PTE_X)) == 0)){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      for(int j = 1; j <= dep; j++)
+        printf(".. ");
+      printf("..%d: pte %p pa %p\n", i, pte, child);
+      dep++;
+      vmprint((pagetable_t)child);
+      dep--;
+    }
+    else if(pte & PTE_V)
+    {
+      for(int j = 1; j <= dep; j++)
+        printf(".. ");
+      printf("..%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+    }
   }
 }
