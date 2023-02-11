@@ -8,7 +8,7 @@
 #include "elf.h"
 
 static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uint sz);
-
+extern int copymap(pagetable_t old, pagetable_t new, uint64 va, uint64 sz);
 int
 exec(char *path, char **argv)
 {
@@ -111,11 +111,15 @@ exec(char *path, char **argv)
   // Commit to the user image.
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
+  // first free the previous process mappings, we don't free the physical pages
+  // because later we will free them in proc_freepagetable()
+  uvmunmap(p->kvm, 0, PGCOUNT(0, p->sz), 0);
+  //next copy the new memory over
+  copymap(p->pagetable, p->kvm, 0, sz);
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
-  //vmprint(p->pagetable);
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:

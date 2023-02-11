@@ -16,8 +16,10 @@ int nextpid = 1;
 struct spinlock pid_lock;
 
 extern void kvmmap_proc(pagetable_t kvm_pt, uint64 va, uint64 pa, uint64 sz, int perm);
-extern pagetable_t kvminitproc(pagetable_t pt);
-extern void proc_kvmfree(pagetable_t pagetable);
+int copymap(pagetable_t old, pagetable_t new, uint64 va, uint64 sz);
+extern int uvmdemap(pagetable_t pagetable, int oldsz, int newsz);
+extern pagetable_t kvminitproc();
+extern void freemap(pagetable_t pagetable, int dep);
 extern void forkret(void);
 extern pte_t* walk(pagetable_t pagetable, uint64 va, int alloc);
 static void wakeup1(struct proc *chan);
@@ -112,7 +114,7 @@ found:
   // Allocate a page for the process's kernel stack.
   // Map it high in memory, followed by an invalid
   // guard page.
-  p->kvm = kvminitproc(p->pagetable);
+  p->kvm = kvminitproc();
   uint64 va = KSTACK((int)(p - proc));
   // now we map the kernel stack
   char *pa = kalloc();
@@ -144,13 +146,13 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
-  if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
   if(p->kvm) 
   {
     uvmunmap(p->kvm, p->kstack, 1, 1);
-    proc_kvmfree(p->kvm);
+    freemap(p->kvm, 0);
   }
+  if(p->pagetable)
+    proc_freepagetable(p->pagetable, p->sz);
   p->kvm = 0;
   p->pagetable = 0;
   p->sz = 0;
@@ -230,8 +232,8 @@ userinit(void)
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
+  copymap(p->pagetable, p->kvm, 0, PGSIZE);
   p->sz = PGSIZE;
-
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -249,16 +251,21 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint sz;
+  uint old_sz, sz;
   struct proc *p = myproc();
-
-  sz = p->sz;
+  old_sz = sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if(old_sz + n >= PLIC)
+      return -1;
+    if((sz = uvmalloc(p->pagetable, old_sz, old_sz + n)) == 0) {
+      return -1;
+    }
+    if((copymap(p->pagetable, p->kvm, old_sz, sz - old_sz)) < 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdemap(p->kvm, old_sz, old_sz + n);
+    uvmdealloc(p->pagetable, old_sz, old_sz + n);
   }
   p->sz = sz;
   return 0;
@@ -277,9 +284,17 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
-
+  // now the kernel stack of the child proc has been mapped
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+  // we assume that the virtual address of the child proc will not grow over PLIC
+  // so we copy the mappings and virtual address in the range [0, PLIC)
+  if(copymap(np->pagetable, np->kvm, 0, p->sz) < 0)
+  {
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -532,7 +547,7 @@ sched(void)
     panic("sched running");
   if(intr_get())
     panic("sched interruptible");
-
+ 
   intena = mycpu()->intena;
   swtch(&p->context, &mycpu()->context);
   mycpu()->intena = intena;
@@ -679,7 +694,7 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
 {
   struct proc *p = myproc();
   if(user_src){
-    return copyin(p->pagetable, dst, src, len);
+    return copyin(p->kvm, dst, src, len);
   } else {
     memmove(dst, (char*)src, len);
     return 0;

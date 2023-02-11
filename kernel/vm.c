@@ -5,14 +5,12 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
 /*
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
-
 extern char etext[];  // kernel.ld sets this to end of kernel code.
-
+extern int copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len);
 extern char trampoline[]; // trampoline.S
 extern void printf(char *fmt, ...);
 /*
@@ -47,14 +45,22 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+void kvmmap_proc(pagetable_t kvm_pt, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(kvm_pt, va, sz, pa, perm) != 0)
+    panic("kvmmap_proc");
+}
+
 // create a kernel page table for current proccess
-// only the first virtual page(virtual page 0) is mapped to the physical page the process is using
-// all the other virtual pages are indentical to the kernel_pagetable
-pagetable_t kvminitproc(pagetable_t uvm)
+pagetable_t kvminitproc()
 {
   pagetable_t pt = kalloc();
-  for(int i = 0; i < 512; i++)
+  memset(pt, 0, PGSIZE);
+  for(int i = 2; i < 512; i++)
     pt[i] = kernel_pagetable[i];
+  kvmmap_proc(pt, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  kvmmap_proc(pt, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  kvmmap_proc(pt, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
   return pt;
 }
 
@@ -122,13 +128,6 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
-void kvmmap_proc(pagetable_t kvm_pt, uint64 va, uint64 pa, uint64 sz, int perm)
-{
-  if(mappages(kvm_pt, va, sz, pa, perm) != 0)
-    panic("kvmmap_proc");
-
-}
-
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
@@ -185,13 +184,33 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   return 0;
 }
 
-// this can only be called when we are using kernel_pagetable
-// clear the per-process kernel pagetable
-// the 1~511 level-0 virtual page points to the level-1 kernel page table, cannot be freed
-// the 0 level-0 virtual page points to the level-1 user page table, cannot be freed
-void proc_kvmfree(pagetable_t pagetable)
+// free the mappings of this page table, but do not free the physical page
+void freemap(pagetable_t pagetable, int dep)
 {
-  kfree((void *)pagetable);
+  if(dep == 0)
+  {
+    for(int i = 0; i < 2; i++){
+      pte_t pte = pagetable[i];
+      if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        // this PTE points to a lower-level page table.
+        uint64 child = PTE2PA(pte);
+        freemap((pagetable_t)child, dep + 1);
+        pagetable[i] = 0;
+      }
+    }
+    for(int i = 2; i < 512; i++)
+      pagetable[i] = 0;
+    kfree((void*)pagetable);
+    return ;
+  }
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      kfree((void*)PTE2PA(pte));
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
 }
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
@@ -296,6 +315,19 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   return newsz;
 }
 
+uint64
+uvmdemap(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+  }
+
+  return newsz;
+}
 // Recursively free page-table pages.
 // All leaf mappings must already have been removed.
 void
@@ -326,6 +358,25 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
+// Given a process's page table, copy
+// its memory into kernel page table.
+// Copies only both the page table.
+int copymap(pagetable_t old, pagetable_t new, uint64 va, uint64 sz)
+{
+  if(va + sz >= PLIC) return -1;
+  uint64 new_sz = va + sz;
+  va = PGROUNDUP(va);
+  for(uint64 i = va; i < new_sz; i += PGSIZE)
+  {
+    pte_t* pte = walk(old, i, 0);
+    uint64 pa = PTE2PA(*pte);
+    int perm = PTE_FLAGS(*pte) & (PTE_W | PTE_R | PTE_X);
+    // when copying map, it may alloc physical memory for page tables
+    // but it won't alloc physical pages
+    kvmmap_proc(new, i, pa, PGSIZE, perm);
+  }
+  return sz;
+}
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -406,23 +457,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
