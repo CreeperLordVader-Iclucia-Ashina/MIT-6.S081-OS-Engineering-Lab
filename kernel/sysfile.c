@@ -484,3 +484,67 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_sigalarm(void)
+{
+  struct proc *p = myproc();
+  int intv;
+  if(argint(0, &intv) < 0)
+    return -1;
+  uint64 handler;
+  if(argaddr(1, &handler) < 0)
+    return -1;
+  p->intv = intv;
+  p->handler = (void (*)())handler;
+  p->ticks = 0;
+  return 0;
+}
+
+// when sys_sigreturn is called, the backtrace of stack is like:
+// sys_sigreturn <- syscall <- usertrap (we are in the kernel)
+// p->trapframe now holds the regs of handler
+// when sys_sigreturn returns, usertrapret() will restore the context to handler correctly
+// but handler is called by 
+// and the backtrace of the stack of handler is like:
+// handler <- function when trap occurred
+// when handler is triggered through syscall, 
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  p->trapframe->ra = p->sigframe->ra;
+  p->trapframe->sp = p->sigframe->sp;
+  p->trapframe->gp = p->sigframe->gp;
+  p->trapframe->tp = p->sigframe->tp;
+  p->trapframe->t0 = p->sigframe->t0;
+  p->trapframe->t1 = p->sigframe->t1;
+  p->trapframe->t2 = p->sigframe->t2;
+  p->trapframe->s0 = p->sigframe->s0;
+  p->trapframe->s1 = p->sigframe->s1;
+  p->trapframe->a0 = p->sigframe->a0;
+  p->trapframe->a1 = p->sigframe->a1;
+  p->trapframe->a2 = p->sigframe->a2;
+  p->trapframe->a3 = p->sigframe->a3;
+  p->trapframe->a4 = p->sigframe->a4;
+  p->trapframe->a5 = p->sigframe->a5;
+  p->trapframe->a6 = p->sigframe->a6;
+  p->trapframe->a7 = p->sigframe->a7;
+  p->trapframe->s2 = p->sigframe->s2;
+  p->trapframe->s3 = p->sigframe->s3;
+  p->trapframe->s4 = p->sigframe->s4;
+  p->trapframe->s5 = p->sigframe->s5;
+  p->trapframe->s6 = p->sigframe->s6;
+  p->trapframe->s7 = p->sigframe->s7;
+  p->trapframe->s8 = p->sigframe->s8;
+  p->trapframe->s9 = p->sigframe->s9;
+  p->trapframe->s10 = p->sigframe->s10;
+  p->trapframe->s11 = p->sigframe->s11;
+  p->trapframe->t3 = p->sigframe->t3;
+  p->trapframe->t4 = p->sigframe->t4;
+  p->trapframe->t5 = p->sigframe->t5;
+  p->trapframe->t6 = p->sigframe->t6;
+  p->trapframe->epc = p->sigret_pc;
+  p->handler_ret = 1;
+  return 0;
+}

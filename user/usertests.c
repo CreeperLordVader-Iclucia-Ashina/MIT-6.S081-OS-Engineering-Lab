@@ -2638,6 +2638,7 @@ main(int argc, char *argv[])
     void (*f)(char *);
     char *s;
   } tests[] = {
+    {bigdir, "bigdir"}, // slow
     {execout, "execout"},
     {copyin, "copyin"},
     {copyout, "copyout"},
@@ -2693,7 +2694,6 @@ main(int argc, char *argv[])
     {dirfile, "dirfile"},
     {iref, "iref"},
     {forktest, "forktest"},
-    {bigdir, "bigdir"}, // slow
     { 0, 0},
   };
 
