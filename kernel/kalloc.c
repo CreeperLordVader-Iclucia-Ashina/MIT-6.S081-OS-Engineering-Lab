@@ -48,9 +48,12 @@ kfree(void *pa)
 {
   struct run *r;
 
-  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
-    panic("kfree");
-
+  if(((uint64)pa % PGSIZE) != 0)
+    panic("kfree: pa not aligned");
+  if((char*)pa < end)
+    panic("kfree: pa too low");
+  if((uint64)pa >= PHYSTOP)
+    panic("kfree: pa too high");
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 

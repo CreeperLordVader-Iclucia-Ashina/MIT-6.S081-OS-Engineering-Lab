@@ -29,6 +29,29 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+int lazy_alloc(uint64 va)
+{
+  struct proc *p = myproc();
+  if(va >= MAXVA) return 0;
+  if(va >= p->sz || va < p->trapframe->sp) 
+    return 0;
+  uint64* mem = (uint64*)kalloc();
+  if(mem == 0) 
+  {
+    //printf("kalloc failed!\n");
+    return 0;
+  }
+  memset(mem, 0, PGSIZE);
+  uint64 a = PGROUNDDOWN(va);
+  if(mappages(p->pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_U) != 0)
+  {
+    printf("map %p to %p, failed\n", a, (uint64)mem);
+    kfree(mem);
+    return 0;
+  }
+  return 1;
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -49,7 +72,6 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
   if(r_scause() == 8){
     // system call
 
@@ -68,9 +90,11 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    if(r_scause() == 12 || r_scause() == 13 || r_scause() == 15)
+    {
+      uint64 va = r_stval();
+      if(!lazy_alloc(va)) p->killed = 1;
+    }
   }
 
   if(p->killed)
@@ -117,7 +141,6 @@ usertrapret(void)
 
   // set S Exception Program Counter to the saved user pc.
   w_sepc(p->trapframe->epc);
-
   // tell trampoline.S the user page table to switch to.
   uint64 satp = MAKE_SATP(p->pagetable);
 
@@ -136,7 +159,6 @@ kerneltrap()
   int which_dev = 0;
   uint64 sepc = r_sepc();
   uint64 sstatus = r_sstatus();
-  uint64 scause = r_scause();
   
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");
@@ -144,10 +166,13 @@ kerneltrap()
     panic("kerneltrap: interrupts enabled");
 
   if((which_dev = devintr()) == 0){
-    printf("scause %p\n", scause);
-    printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
-    panic("kerneltrap");
+    if(r_scause() == 12 || r_scause() == 13 || r_scause() == 15)
+    {
+      uint64 va = r_stval();
+      if(!lazy_alloc(va)) panic("kerneltrap");
+    }
   }
+    
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)

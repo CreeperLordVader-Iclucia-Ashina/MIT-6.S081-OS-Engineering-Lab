@@ -2685,6 +2685,8 @@ main(int argc, char *argv[])
     void (*f)(char *);
     char *s;
   } tests[] = {
+    {sbrkarg, "sbrkarg"},
+    {sbrkbugs, "sbrkbugs" },
     {execout, "execout"},
     {copyin, "copyin"},
     {copyout, "copyout"},
@@ -2697,7 +2699,6 @@ main(int argc, char *argv[])
     {truncate3, "truncate3"},
     {reparent2, "reparent2"},
     {pgbug, "pgbug" },
-    {sbrkbugs, "sbrkbugs" },
     // {badwrite, "badwrite" },
     {badarg, "badarg" },
     {reparent, "reparent" },
@@ -2721,7 +2722,6 @@ main(int argc, char *argv[])
     {sbrkmuch, "sbrkmuch"},
     {kernmem, "kernmem"},
     {sbrkfail, "sbrkfail"},
-    {sbrkarg, "sbrkarg"},
     {validatetest, "validatetest"},
     {stacktest, "stacktest"},
     {opentest, "opentest"},
@@ -2774,7 +2774,7 @@ main(int argc, char *argv[])
   int free0 = countfree();
   int free1 = 0;
   int fail = 0;
-  for (struct test *t = tests; t->s != 0; t++) {
+   for (struct test *t = tests; t->s != 0; t++) {
     if((justone == 0) || strcmp(t->s, justone) == 0) {
       if(!run(t->f, t->s))
         fail = 1;
