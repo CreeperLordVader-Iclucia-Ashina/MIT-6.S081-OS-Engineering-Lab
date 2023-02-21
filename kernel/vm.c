@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -15,6 +17,9 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+extern int ref[];
+
+extern int copy_on_write(pagetable_t pagetable, uint64 va);
 /*
  * create a direct-map page table for the kernel.
  */
@@ -92,7 +97,7 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
 // or 0 if not mapped.
 // Can only be used to look up user pages.
 uint64
-walkaddr(pagetable_t pagetable, uint64 va)
+walkaddr(pagetable_t pagetable, uint64 va, int w)
 {
   pte_t *pte;
   uint64 pa;
@@ -107,6 +112,11 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
   if((*pte & PTE_U) == 0)
     return 0;
+  if(w && (*pte & PTE_COW))
+  {
+    if(!copy_on_write(pagetable, va)) return 0;
+    else pte = walk(pagetable, va, 0);
+  }
   pa = PTE2PA(*pte);
   return pa;
 }
@@ -186,10 +196,12 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
-    if(do_free){
-      uint64 pa = PTE2PA(*pte);
+    uint64 pa = PTE2PA(*pte);
+    // no matter we free the physical page or not, it is a must to decrement the reference count
+    // but in free this is already done, so we simply need to do it seperately when do_free = 0
+    ref[PXIDX(pa)]--;
+    if(do_free && !ref[PXIDX(pa)])
       kfree((void*)pa);
-    }
     *pte = 0;
   }
 }
@@ -219,6 +231,7 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
     panic("inituvm: more than a page");
   mem = kalloc();
   memset(mem, 0, PGSIZE);
+  ref[PXIDX((uint64)mem)]++;
   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
   memmove(mem, src, sz);
 }
@@ -237,6 +250,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
+    ref[PXIDX((uint64)mem)]++;
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz);
       return 0;
@@ -286,7 +300,7 @@ freewalk(pagetable_t pagetable)
       panic("freewalk: leaf");
     }
   }
-  kfree((void*)pagetable);
+  if(!ref[PXIDX((uint64)pagetable)])kfree((void*)pagetable);
 }
 
 // Free user memory pages,
@@ -311,7 +325,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,14 +332,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    *pte &= (~PTE_W);
+    *pte |= PTE_COW;
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    ref[PXIDX(pa)]++;
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
   }
   return 0;
 
@@ -358,7 +369,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = walkaddr(pagetable, va0, 1);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
@@ -383,7 +394,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = walkaddr(pagetable, va0, 0);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);
@@ -410,7 +421,7 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
+    pa0 = walkaddr(pagetable, va0, 0);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);
@@ -438,5 +449,30 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+void vmprint(pagetable_t pagetable)
+{
+  static int dep = 0;
+  if(!dep) printf("page table %p\n", pagetable);
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && ((pte & (PTE_R|PTE_W|PTE_X)) == 0)){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      for(int j = 1; j <= dep; j++)
+        printf(".. ");
+      printf("..%d: pte %p pa %p\n", i, pte, child);
+      dep++;
+      vmprint((pagetable_t)child);
+      dep--;
+    }
+    else if(pte & PTE_V)
+    {
+      for(int j = 1; j <= dep; j++)
+        printf(".. ");
+      printf("..%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+    }
   }
 }

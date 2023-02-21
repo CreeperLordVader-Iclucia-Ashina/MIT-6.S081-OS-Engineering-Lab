@@ -54,6 +54,7 @@ void panic(char*);
 struct cmd *parsecmd(char*);
 
 // Execute cmd.  Never returns.
+__attribute__((noreturn))
 void
 runcmd(struct cmd *cmd)
 {
@@ -164,6 +165,7 @@ main(void)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
+    printf("sh: now i'm going to fork!\n");
     if(fork1() == 0)
       runcmd(parsecmd(buf));
     wait(0);
@@ -345,7 +347,6 @@ struct cmd*
 parseline(char **ps, char *es)
 {
   struct cmd *cmd;
-
   cmd = parsepipe(ps, es);
   while(peek(ps, es, "&")){
     gettoken(ps, es, 0, 0);

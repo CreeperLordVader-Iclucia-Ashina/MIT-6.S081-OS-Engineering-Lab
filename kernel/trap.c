@@ -10,6 +10,8 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+extern pte_t *walk(pagetable_t pagetable, uint64 va, int alloc);
+extern int ref[];
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -29,6 +31,29 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+int copy_on_write(pagetable_t pagetable, uint64 va)
+{
+  uint64 a = PGROUNDDOWN(va);
+  pte_t *pte = walk(pagetable, a, 0);
+  if(!(*pte & PTE_COW))
+    return 0;
+  uint64 pa = (uint64)kalloc();
+  if(pa == 0) return 0;
+  uint64 perm = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+  printf("%d\n", ref[PXIDX(PTE2PA(*pte))]);
+  uvmunmap(pagetable, a, 1, 0);// unmap old mappings and map it to a new one
+  if(mappages(pagetable, a, PGSIZE, pa, perm) != 0)
+  {
+    kfree((void*)pa);
+    return 0;
+  }
+  ref[PXIDX(pa)]++;
+  memmove((void *)PTE2PA(*pte), (void *)pa, PGSIZE);
+  // if the reference to the page is 1, then it doesn't need to copy on write
+  printf("copy on write happens, for proc %s, mapping of %p changed from %p to %p\n", myproc()->name, va, PTE2PA(*pte), pa);
+  if(ref[PXIDX(PTE2PA(*pte))] == 1) *pte &= (~PTE_COW);
+  return 1;
+}
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -68,9 +93,15 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    // do copy-on-write on page fault when storing/writing to the page
+    if((r_scause() != 5 && r_scause() != 15) || !copy_on_write(p->pagetable, r_stval()))
+      p->killed = 1;
+    if(p->killed)
+    {
+      printf("%p %p\n", PTE2PA(*walk(p->pagetable, r_stval(), 0)), PTE_FLAGS(*walk(p->pagetable, r_stval(), 0)));
+      printf("usertrap(): unexpected scause %p pid=%d, name is %s\n", r_scause(), p->pid, p->name);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    }
   }
 
   if(p->killed)

@@ -18,8 +18,11 @@ struct spinlock pid_lock;
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
+extern pte_t *walk(pagetable_t pagetable, uint64 va, int alloc);
+extern void vmprint(pagetable_t);
 
 extern char trampoline[]; // trampoline.S
+extern int ref[];
 
 // initialize the proc table at boot time.
 void
@@ -136,7 +139,7 @@ found:
 static void
 freeproc(struct proc *p)
 {
-  if(p->trapframe)
+  if(p->trapframe && !ref[PXIDX((uint64)p->trapframe)])
     kfree((void*)p->trapframe);
   p->trapframe = 0;
   if(p->pagetable)
@@ -168,12 +171,13 @@ proc_pagetable(struct proc *p)
   // at the highest user virtual address.
   // only the supervisor uses it, on the way
   // to/from user space, so not PTE_U.
+  ref[PXIDX((uint64)trampoline)]++;
   if(mappages(pagetable, TRAMPOLINE, PGSIZE,
               (uint64)trampoline, PTE_R | PTE_X) < 0){
     uvmfree(pagetable, 0);
     return 0;
   }
-
+  ref[PXIDX((uint64)(p->trapframe))]++;
   // map the trapframe just below TRAMPOLINE, for trampoline.S.
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
@@ -246,6 +250,7 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    printf("%s grow: %p\n", p->name, *walk(p->pagetable, 0x2000, 0));
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
@@ -258,6 +263,7 @@ growproc(int n)
 int
 fork(void)
 {
+  printf("fork!\n");
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
@@ -268,11 +274,16 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
+  vmprint(p->pagetable);
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
+  printf("copy %p bytes from p to np:\n", p->sz);
+  vmprint(p->pagetable);
+  vmprint(np->pagetable);
+
   np->sz = p->sz;
 
   np->parent = p;
@@ -296,7 +307,7 @@ fork(void)
   np->state = RUNNABLE;
 
   release(&np->lock);
-
+  printf("fork done!\n");
   return pid;
 }
 
