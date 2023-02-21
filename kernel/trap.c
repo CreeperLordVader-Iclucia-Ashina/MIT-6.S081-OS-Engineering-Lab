@@ -12,6 +12,8 @@ uint ticks;
 extern char trampoline[], uservec[], userret[];
 extern pte_t *walk(pagetable_t pagetable, uint64 va, int alloc);
 extern int ref[];
+extern void vmprint(pagetable_t);
+extern uint64 free_sz;
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -35,23 +37,35 @@ int copy_on_write(pagetable_t pagetable, uint64 va)
 {
   uint64 a = PGROUNDDOWN(va);
   pte_t *pte = walk(pagetable, a, 0);
-  if(!(*pte & PTE_COW))
+  uint64 old_pa = PTE2PA(*pte);
+  if(ref[PXIDX(old_pa)] == 1) // this is the last reference to old_pa, so there is no need to make a copy of it
+  {
+    *pte &= (~PTE_COW);
+    *pte |= PTE_W;
+    return 1;
+  }
+  uint64 flags = PTE_FLAGS(*pte);
+  if(!(flags & PTE_COW))
+  {
+    printf("copy_on_write: not a copy-on-write page\n");
     return 0;
+  }
   uint64 pa = (uint64)kalloc();
-  if(pa == 0) return 0;
-  uint64 perm = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
-  printf("%d\n", ref[PXIDX(PTE2PA(*pte))]);
-  uvmunmap(pagetable, a, 1, 0);// unmap old mappings and map it to a new one
+  if(pa == 0)
+  {
+    printf("copy_on_write: no free page\n");
+    return 0;
+  } 
+  uint64 perm = (flags | PTE_W) & (~PTE_COW);
+  memmove((void *)pa, (void *)old_pa, PGSIZE);
+  uvmunmap(pagetable, a, 1, 1);// unmap old mappings and map it to a new one
   if(mappages(pagetable, a, PGSIZE, pa, perm) != 0)
   {
     kfree((void*)pa);
+    printf("copy_on_write: mappages failed\n");
     return 0;
   }
   ref[PXIDX(pa)]++;
-  memmove((void *)PTE2PA(*pte), (void *)pa, PGSIZE);
-  // if the reference to the page is 1, then it doesn't need to copy on write
-  printf("copy on write happens, for proc %s, mapping of %p changed from %p to %p\n", myproc()->name, va, PTE2PA(*pte), pa);
-  if(ref[PXIDX(PTE2PA(*pte))] == 1) *pte &= (~PTE_COW);
   return 1;
 }
 //
@@ -94,11 +108,10 @@ usertrap(void)
     // ok
   } else {
     // do copy-on-write on page fault when storing/writing to the page
-    if((r_scause() != 5 && r_scause() != 15) || !copy_on_write(p->pagetable, r_stval()))
+    if((r_scause() != 15)|| !copy_on_write(p->pagetable, r_stval()))
       p->killed = 1;
     if(p->killed)
     {
-      printf("%p %p\n", PTE2PA(*walk(p->pagetable, r_stval(), 0)), PTE_FLAGS(*walk(p->pagetable, r_stval(), 0)));
       printf("usertrap(): unexpected scause %p pid=%d, name is %s\n", r_scause(), p->pid, p->name);
       printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     }

@@ -14,6 +14,7 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 int ref[PHYSTOP >> PGSHIFT]; // reference count
+uint64 free_sz = 0;
 
 struct run {
   struct run *next;
@@ -61,10 +62,10 @@ kfree(void *pa)
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
+  acquire(&kmem.lock);
   r = (struct run*)pa;
   if(ref[PXIDX((uint64)pa)])
     panic("kfree: freeing a physical page with reference");
-  acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
@@ -82,10 +83,12 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
-  release(&kmem.lock);
-
   if(ref[PXIDX((uint64)r)])
+  {
+    printf("physical page %p with %d reference(s) is allocated\n", r, ref[PXIDX((uint64)r)]);
     panic("kalloc: a physical page with non-zero reference is allocated");
+  }
+  release(&kmem.lock);
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;

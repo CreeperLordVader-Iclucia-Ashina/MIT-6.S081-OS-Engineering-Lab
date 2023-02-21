@@ -20,6 +20,10 @@ extern char trampoline[]; // trampoline.S
 extern int ref[];
 
 extern int copy_on_write(pagetable_t pagetable, uint64 va);
+
+void vmprint(pagetable_t);
+
+extern uint64 free_sz;
 /*
  * create a direct-map page table for the kernel.
  */
@@ -198,7 +202,6 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not a leaf");
     uint64 pa = PTE2PA(*pte);
     // no matter we free the physical page or not, it is a must to decrement the reference count
-    // but in free this is already done, so we simply need to do it seperately when do_free = 0
     ref[PXIDX(pa)]--;
     if(do_free && !ref[PXIDX(pa)])
       kfree((void*)pa);
@@ -230,6 +233,7 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
   mem = kalloc();
+  if(mem == 0) panic("inituvm: no free page");
   memset(mem, 0, PGSIZE);
   ref[PXIDX((uint64)mem)]++;
   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
@@ -250,7 +254,6 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
-    ref[PXIDX((uint64)mem)]++;
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz);
       return 0;
@@ -261,6 +264,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
+    ref[PXIDX((uint64)mem)]++;
   }
   return newsz;
 }
@@ -300,7 +304,7 @@ freewalk(pagetable_t pagetable)
       panic("freewalk: leaf");
     }
   }
-  if(!ref[PXIDX((uint64)pagetable)])kfree((void*)pagetable);
+  kfree((void*)pagetable);
 }
 
 // Free user memory pages,

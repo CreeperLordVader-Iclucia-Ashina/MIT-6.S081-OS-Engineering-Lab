@@ -19,10 +19,11 @@ extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 extern pte_t *walk(pagetable_t pagetable, uint64 va, int alloc);
+extern uint64 free_sz;
+extern int ref[];
 extern void vmprint(pagetable_t);
 
 extern char trampoline[]; // trampoline.S
-extern int ref[];
 
 // initialize the proc table at boot time.
 void
@@ -139,11 +140,11 @@ found:
 static void
 freeproc(struct proc *p)
 {
-  if(p->trapframe && !ref[PXIDX((uint64)p->trapframe)])
-    kfree((void*)p->trapframe);
-  p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->trapframe)
+    kfree((void*)p->trapframe);
+  p->trapframe = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -177,8 +178,8 @@ proc_pagetable(struct proc *p)
     uvmfree(pagetable, 0);
     return 0;
   }
-  ref[PXIDX((uint64)(p->trapframe))]++;
   // map the trapframe just below TRAMPOLINE, for trampoline.S.
+  ref[PXIDX((uint64)(p->trapframe))]++;
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
@@ -219,7 +220,6 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
-  
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
@@ -250,7 +250,6 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
-    printf("%s grow: %p\n", p->name, *walk(p->pagetable, 0x2000, 0));
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
@@ -263,7 +262,6 @@ growproc(int n)
 int
 fork(void)
 {
-  printf("fork!\n");
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
@@ -274,15 +272,11 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  vmprint(p->pagetable);
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
-  printf("copy %p bytes from p to np:\n", p->sz);
-  vmprint(p->pagetable);
-  vmprint(np->pagetable);
 
   np->sz = p->sz;
 
@@ -307,7 +301,6 @@ fork(void)
   np->state = RUNNABLE;
 
   release(&np->lock);
-  printf("fork done!\n");
   return pid;
 }
 

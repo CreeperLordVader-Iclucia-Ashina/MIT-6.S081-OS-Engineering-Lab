@@ -165,7 +165,6 @@ main(void)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
-    printf("sh: now i'm going to fork!\n");
     if(fork1() == 0)
       runcmd(parsecmd(buf));
     wait(0);
