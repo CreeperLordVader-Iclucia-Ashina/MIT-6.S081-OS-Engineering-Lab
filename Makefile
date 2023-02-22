@@ -215,7 +215,7 @@ ph: notxv6/ph.c
 	gcc -o ph -g -O2 notxv6/ph.c -pthread
 
 barrier: notxv6/barrier.c
-	gcc -o barrier -g -O2 notxv6/barrier.c -pthread
+	gcc -o barrier -g -O3 -Wall -Wextra -pedantic -Werror notxv6/barrier.c -pthread -fsanitize=thread
 endif
 
 ifeq ($(LAB),lock)

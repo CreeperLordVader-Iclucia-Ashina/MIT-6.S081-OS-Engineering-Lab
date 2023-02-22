@@ -5,13 +5,14 @@
 #include <pthread.h>
 
 static int nthread = 1;
-static int round = 0;
+//static int round = 0;
 
 struct barrier {
   pthread_mutex_t barrier_mutex;
   pthread_cond_t barrier_cond;
   int nthread;      // Number of threads that have reached this round of the barrier
   int round;     // Barrier round
+  int free_t;
 } bstate;
 
 static void
@@ -20,6 +21,7 @@ barrier_init(void)
   assert(pthread_mutex_init(&bstate.barrier_mutex, NULL) == 0);
   assert(pthread_cond_init(&bstate.barrier_cond, NULL) == 0);
   bstate.nthread = 0;
+  bstate.free_t = 0;
 }
 
 static void 
@@ -30,14 +32,41 @@ barrier()
   // Block until all threads have called barrier() and
   // then increment bstate.round.
   //
-  
+  pthread_mutex_lock(&bstate.barrier_mutex);
+  bstate.nthread++;
+  if(bstate.nthread == nthread)
+  {
+    bstate.nthread = 0;
+    bstate.free_t++;
+    if(bstate.free_t == nthread) 
+    {
+      bstate.free_t = 0;
+      bstate.round++;
+    }
+    pthread_mutex_unlock(&bstate.barrier_mutex);
+    pthread_cond_broadcast(&bstate.barrier_cond);
+    while(bstate.free_t);// wait for other threads
+    return ;
+  }
+  while(bstate.nthread)
+  {
+    pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);// broadcast wake it up, and we acquire the lock
+  }
+  bstate.free_t++;
+  if(bstate.free_t == nthread) 
+  {
+    bstate.free_t = 0;
+    bstate.round++;
+  }
+  pthread_mutex_unlock(&bstate.barrier_mutex);
+  while(bstate.free_t);// we'll return only when all threads prepare to return
 }
 
 static void *
 thread(void *xa)
 {
-  long n = (long) xa;
-  long delay;
+  //long n = (long) xa;
+  //long delay;
   int i;
 
   for (i = 0; i < 20000; i++) {
@@ -45,8 +74,8 @@ thread(void *xa)
     assert (i == t);
     barrier();
     usleep(random() % 100);
+    while(bstate.free_t);
   }
-
   return 0;
 }
 
@@ -56,7 +85,7 @@ main(int argc, char *argv[])
   pthread_t *tha;
   void *value;
   long i;
-  double t1, t0;
+  //double t1, t0;
 
   if (argc < 2) {
     fprintf(stderr, "%s: %s nthread\n", argv[0], argv[0]);
@@ -65,7 +94,6 @@ main(int argc, char *argv[])
   nthread = atoi(argv[1]);
   tha = malloc(sizeof(pthread_t) * nthread);
   srandom(0);
-
   barrier_init();
 
   for(i = 0; i < nthread; i++) {
