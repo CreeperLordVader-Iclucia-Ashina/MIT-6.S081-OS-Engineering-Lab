@@ -19,8 +19,14 @@ struct context {
 };
 
 // Per-CPU state.
+struct memlist
+{
+  struct spinlock lock;
+  struct run *freelist;
+};
 struct cpu {
   struct proc *proc;          // The process running on this cpu, or null.
+  struct memlist kmem;        // free list of memory
   struct context context;     // swtch() here to enter scheduler().
   int noff;                   // Depth of push_off() nesting.
   int intena;                 // Were interrupts enabled before push_off()?

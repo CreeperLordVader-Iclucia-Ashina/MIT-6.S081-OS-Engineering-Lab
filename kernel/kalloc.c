@@ -8,26 +8,26 @@
 #include "spinlock.h"
 #include "riscv.h"
 #include "defs.h"
+#include "proc.h"
 
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
+extern struct cpu cpus[NCPU];
 
 struct run {
   struct run *next;
 };
 
-struct {
-  struct spinlock lock;
-  struct run *freelist;
-} kmem;
-
+// only cpu0 will call this, so there is no need to lock
+// after kinit is called, 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  for(int i = 0; i < NCPU; i++)
+    initlock(&cpus[i].kmem.lock, "kmem");
+  freerange(end, (void*)PHYSTOP); 
 }
 
 void
@@ -55,11 +55,37 @@ kfree(void *pa)
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
+  push_off();
+  struct cpu *c = mycpu();
+  acquire(&c->kmem.lock);
+  r->next = c->kmem.freelist;
+  c->kmem.freelist = r;
+  release(&c->kmem.lock);
+  pop_off();
+}
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+// cpu C steal memory from other cpus
+void* steal(struct cpu *C)
+{
+  struct run *r = 0;
+  for(struct cpu *c = cpus; c < cpus + NCPU; c++)
+  {
+    if(c != C)
+    {
+      acquire(&c->kmem.lock);
+      if(c->kmem.freelist)
+      {
+        r = c->kmem.freelist;
+        c->kmem.freelist = r->next;// remove r from the free list of c
+        // there is no need to put r into the free list of C
+        // because r is allocated, when we kfree r
+        release(&c->kmem.lock);
+        break;
+      }
+      release(&c->kmem.lock);
+    }
+  }
+  return r; // in case NCPU = 1
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -69,13 +95,15 @@ void *
 kalloc(void)
 {
   struct run *r;
-
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  push_off();
+  struct cpu *c = mycpu();
+  acquire(&c->kmem.lock);
+  r = c->kmem.freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
-
+    c->kmem.freelist = r->next;
+  else r = steal(c);
+  release(&c->kmem.lock);
+  pop_off();
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
