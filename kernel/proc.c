@@ -508,6 +508,7 @@ sched(void)
     panic("sched p->lock");
   if(mycpu()->noff != 1)
     panic("sched locks");
+    
   if(p->state == RUNNING)
     panic("sched running");
   if(intr_get())
