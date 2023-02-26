@@ -401,6 +401,33 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
 
+  bn -= NINDIRECT;
+  if(bn < NDOUB_INDIRECT)
+  {
+    uint singly_bn = bn >> 8;
+    // if we haven't allocated block for doubly indirect block, alloc it
+    if((addr = ip->addrs[NDIRECT + 1]) == 0)
+      ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+    // we first load the corresponding singly indirect block
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[singly_bn]) == 0){
+      a[singly_bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    // we then load and write to the doubly indirect block
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    bn &= 255;
+    if((addr = a[bn]) == 0){
+      a[bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
+
   panic("bmap: out of range");
 }
 
