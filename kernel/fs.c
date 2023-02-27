@@ -316,8 +316,12 @@ ilock(struct inode *ip)
 void
 iunlock(struct inode *ip)
 {
-  if(ip == 0 || !holdingsleep(&ip->lock) || ip->ref < 1)
-    panic("iunlock");
+  if(ip == 0)
+    panic("iunlock: null pointer");
+  else if(!holdingsleep(&ip->lock))
+    panic("iunlock: not holding ip->lock");
+  else if(ip->ref < 1)
+    panic("iunlock: ip->ref < 1");
 
   releasesleep(&ip->lock);
 }
